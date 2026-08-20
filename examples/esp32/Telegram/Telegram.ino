@@ -15,8 +15,8 @@
  *    7. Copy the bot token to the sketch in telegramBotToken.
  *    8. Send a message to the newly created bot to start a conversation.
  *    9. Send a message to @myidbot: https://telegram.me/myidbot
- *   10. Get your user ID: /getid
- *   11. Copy the user ID to the sketch in telegramUserID.
+ *   10. Get your user/chat ID: /getid
+ *   11. Copy the user/chat ID to the sketch in telegramUserID.
  *   12. Upload the sketch.
  *
  *  Usage:
@@ -25,6 +25,7 @@
  *    - Arm away: /armaway
  *    - Arm night (no entry delay): /armnight
  *    - Disarm: /disarm
+ *    - Report status: /status
  *
  *  Release notes:
  *    1.2 - Workaround for upstream esp32 TLS handshake issue https://github.com/espressif/arduino-esp32/issues/6165
@@ -348,12 +349,24 @@ void handleTelegram(byte telegramMessages) {
 
   for (byte i = 0; i < telegramMessages; i++) {
 
+    // Rejects any message that is not from the authorized chat ID and notifies the sender
+    if (telegramBot.messages[i].chat_id != telegramUserID) {
+      telegramBot.sendMessage(telegramBot.messages[i].chat_id, "Unauthorized: this chat is not permitted to control this security system.", "");
+      continue;  // Skips processing this message entirely
+    }
+
     // Checks if a partition number 1-8 has been sent and sets the partition
     if (telegramBot.messages[i].text[1] >= 0x31 && telegramBot.messages[i].text[1] <= 0x38) {
       partition = telegramBot.messages[i].text[1] - 49;
       char messageContent[17] = "Set: Partition ";
       appendPartition(partition, messageContent);  // Appends the message with the partition number
       sendMessage(messageContent);
+    }
+
+    // Reports current status on demand
+    if (telegramBot.messages[i].text == "/status") {
+      sendStatus(partition);
+      continue;  // Skips the arm/disarm handling below for this message
     }
 
     // Resets status if attempting to change the armed mode while armed or not ready
@@ -387,6 +400,39 @@ void handleTelegram(byte telegramMessages) {
       dsc.write(accessCode);
     }
   }
+}
+
+
+// Builds and sends a status report for the given partition, including Keybus and panel-level trouble states
+void sendStatus(byte partition) {
+  char messageContent[150] = "Status - Partition ";
+  char partitionNumber[2];
+  itoa(partition + 1, partitionNumber, 10);
+  strcat(messageContent, partitionNumber);
+  strcat(messageContent, ": ");
+
+  if (dsc.alarm[partition]) strcat(messageContent, "ALARM");
+  else if (dsc.exitDelay[partition]) strcat(messageContent, "Exit delay in progress");
+  else if (dsc.armedAway[partition] && dsc.noEntryDelay[partition]) strcat(messageContent, "Armed night away");
+  else if (dsc.armedAway[partition]) strcat(messageContent, "Armed away");
+  else if (dsc.armedStay[partition] && dsc.noEntryDelay[partition]) strcat(messageContent, "Armed night stay");
+  else if (dsc.armedStay[partition]) strcat(messageContent, "Armed stay");
+  else if (dsc.ready[partition]) strcat(messageContent, "Disarmed, ready");
+  else strcat(messageContent, "Disarmed, not ready");
+
+  strcat(messageContent, "\nKeybus: ");
+  strcat(messageContent, dsc.keybusConnected ? "connected" : "DISCONNECTED");
+
+  strcat(messageContent, "\nTrouble: ");
+  strcat(messageContent, dsc.trouble ? "YES" : "none");
+
+  strcat(messageContent, "\nAC power: ");
+  strcat(messageContent, dsc.powerTrouble ? "FAILURE" : "OK");
+
+  strcat(messageContent, "\nPanel battery: ");
+  strcat(messageContent, dsc.batteryTrouble ? "trouble" : "OK");
+
+  sendMessage(messageContent);
 }
 
 
